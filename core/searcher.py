@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import pyopencl as cl
 
@@ -124,8 +124,44 @@ def multi_gpu_init(
     return [0]
 
 
-def save_result(outputs: List, output_dir: str) -> int:
-    from core.utils.crypto import save_keypair
+def _resolve_output_dir(
+    pubkey: str,
+    default_dir: str,
+    starts_with: Tuple[str, ...],
+    ends_with: Tuple[str, ...],
+    pattern_dirs: Dict[str, str],
+    is_case_sensitive: bool,
+) -> str:
+    if not pattern_dirs:
+        return default_dir
+
+    def _cmp(a: str, b: str) -> bool:
+        if is_case_sensitive:
+            return a == b
+        return a.lower() == b.lower()
+
+    for prefix in starts_with:
+        key = f"prefix:{prefix}"
+        if key in pattern_dirs and _cmp(pubkey[: len(prefix)], prefix):
+            return pattern_dirs[key]
+
+    for suffix in ends_with:
+        key = f"suffix:{suffix}"
+        if key in pattern_dirs and _cmp(pubkey[-len(suffix) :], suffix):
+            return pattern_dirs[key]
+
+    return default_dir
+
+
+def save_result(
+    outputs: List,
+    output_dir: str,
+    starts_with: Tuple[str, ...] = (),
+    ends_with: Tuple[str, ...] = (),
+    pattern_dirs: Optional[Dict[str, str]] = None,
+    is_case_sensitive: bool = True,
+) -> int:
+    from core.utils.crypto import get_public_key_from_private_bytes, save_keypair
 
     result_count = 0
     for output in outputs:
@@ -133,5 +169,12 @@ def save_result(outputs: List, output_dir: str) -> int:
             continue
         result_count += 1
         pv_bytes = bytes(output[1:])
-        save_keypair(pv_bytes, output_dir)
+        target_dir = output_dir
+        if pattern_dirs:
+            pubkey = get_public_key_from_private_bytes(pv_bytes)
+            target_dir = _resolve_output_dir(
+                pubkey, output_dir, starts_with, ends_with,
+                pattern_dirs, is_case_sensitive,
+            )
+        save_keypair(pv_bytes, target_dir)
     return result_count
