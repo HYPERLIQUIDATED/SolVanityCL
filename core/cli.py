@@ -92,6 +92,18 @@ def search_pubkey(
 
     prefix_entries = [_parse_pattern(s) for s in starts_with]
     suffix_entries = [_parse_pattern(s) for s in ends_with]
+
+    for pattern, _ in prefix_entries:
+        if pattern == "":
+            raise click.BadParameter(
+                "You need to specify a prefix before the colon (e.g. bonk:./out), not just :./out"
+            )
+    for pattern, _ in suffix_entries:
+        if pattern == "":
+            raise click.BadParameter(
+                "You need to specify a suffix before the colon (e.g. pump:./out), not just :./out"
+            )
+
     prefix_patterns = tuple(p for p, _ in prefix_entries)
     suffix_patterns = tuple(s for s, _ in suffix_entries)
 
