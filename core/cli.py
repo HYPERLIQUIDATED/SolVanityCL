@@ -1,6 +1,8 @@
 import logging
 import multiprocessing
 import sys
+import time
+import queue as _queue
 from multiprocessing.pool import Pool
 from typing import Dict, List, Optional, Tuple
 
@@ -135,37 +137,113 @@ def search_pubkey(
     )
     logging.info(f"Using {gpu_counts} OpenCL device(s)")
 
-    result_count = 0
+    FLUSH_INTERVAL = 5.0
+
+    found_count = 0
+    saved_total = 0
+    pending_results: List = []
+    last_flush = time.time()
+
     with multiprocessing.Manager() as manager:
         with Pool(processes=gpu_counts) as pool:
             kernel_source = load_kernel_source(
                 prefix_patterns, suffix_patterns, is_case_sensitive
             )
             lock = manager.Lock()
-            while result_count < count:
-                stop_flag = manager.Value("i", 0)
-                results = pool.starmap(
-                    multi_gpu_init,
-                    [
+            result_queue = manager.Queue()
+            stop_flag = manager.Value("i", 0)
+
+            async_results = []
+            for x in range(gpu_counts):
+                async_results.append(
+                    pool.apply_async(
+                        multi_gpu_init,
                         (
                             x,
                             HostSetting(kernel_source, iteration_bits),
                             gpu_counts,
                             stop_flag,
                             lock,
+                            result_queue,
                             chosen_devices,
+                        ),
+                    )
+                )
+
+            while found_count < count:
+                try:
+                    res = result_queue.get(timeout=1.0)
+                except _queue.Empty:
+                    res = None
+                now = time.time()
+                if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
+                    pending_results.append(list(res))
+                    found_count += 1
+                    if found_count % 100 == 0 or found_count == count:
+                        logging.info(f"Progress: {found_count}/{count} matches")
+
+                if (now - last_flush) >= FLUSH_INTERVAL or found_count >= count:
+                    if pending_results:
+                        saved = save_result(
+                            pending_results, output_dir,
+                            prefix_patterns, suffix_patterns,
+                            pattern_dirs, is_case_sensitive,
                         )
-                        for x in range(gpu_counts)
-                    ],
+                        saved_total += saved
+                        pending_results.clear()
+                    last_flush = now
+
+            with lock:
+                stop_flag.value = 1
+
+            logging.info("Signaled workers to stop; draining remaining results...")
+            while True:
+                try:
+                    res = result_queue.get(timeout=0.5)
+                except _queue.Empty:
+                    res = None
+
+                now = time.time()
+                if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
+                    pending_results.append(list(res))
+
+                if (now - last_flush) >= FLUSH_INTERVAL and pending_results:
+                    saved = save_result(
+                        pending_results, output_dir,
+                        prefix_patterns, suffix_patterns,
+                        pattern_dirs, is_case_sensitive,
+                    )
+                    saved_total += saved
+                    pending_results.clear()
+                    last_flush = now
+
+                all_finished = all(a.ready() for a in async_results)
+                if all_finished:
+                    while True:
+                        try:
+                            res = result_queue.get_nowait()
+                        except _queue.Empty:
+                            break
+                        if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
+                            pending_results.append(list(res))
+                    break
+
+            if pending_results:
+                saved = save_result(
+                    pending_results, output_dir,
+                    prefix_patterns, suffix_patterns,
+                    pattern_dirs, is_case_sensitive,
                 )
-                result_count += save_result(
-                    results,
-                    output_dir,
-                    prefix_patterns,
-                    suffix_patterns,
-                    pattern_dirs,
-                    is_case_sensitive,
-                )
+                saved_total += saved
+                pending_results.clear()
+
+            for a in async_results:
+                try:
+                    a.get(timeout=10)
+                except Exception:
+                    pass
+
+    logging.info(f"Search finished. Total matches found: {found_count}, total saved: {saved_total}")
 
 
 @cli.command(context_settings={"show_default": True})
