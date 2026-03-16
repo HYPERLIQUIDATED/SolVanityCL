@@ -173,6 +173,7 @@ def save_result(
     ends_with: Tuple[str, ...] = (),
     pattern_dirs: Optional[Dict[str, str]] = None,
     is_case_sensitive: bool = True,
+    quiet: bool = False,
 ) -> int:
     from core.utils.crypto import get_public_key_from_private_bytes, save_keypair, _seen_pubkeys
 
@@ -188,5 +189,5 @@ def save_result(
                 pubkey, output_dir, starts_with, ends_with,
                 pattern_dirs, is_case_sensitive,
             )
-        save_keypair(pv_bytes, target_dir)
+        save_keypair(pv_bytes, target_dir, quiet=quiet)
     return len(_seen_pubkeys) - before_count

@@ -138,11 +138,15 @@ def search_pubkey(
     logging.info(f"Using {gpu_counts} OpenCL device(s)")
 
     FLUSH_INTERVAL = 5.0
+    PRINT_RATE_THRESHOLD = 5.0  # keys/sec; above this, suppress per-key logs
 
     found_count = 0
     saved_total = 0
     pending_results: List = []
     last_flush = time.time()
+    last_print_time = time.time()
+    keys_since_last_print = 0
+    high_throughput = False
 
     with multiprocessing.Manager() as manager:
         with Pool(processes=gpu_counts) as pool:
@@ -179,8 +183,25 @@ def search_pubkey(
                 if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
                     pending_results.append(list(res))
                     found_count += 1
-                    if found_count % 100 == 0 or found_count == count:
-                        logging.info(f"Progress: {found_count}/{count} matches")
+                    keys_since_last_print += 1
+
+                    elapsed_since_print = now - last_print_time
+                    if elapsed_since_print >= 1.0:
+                        rate = keys_since_last_print / elapsed_since_print
+                        high_throughput = rate > PRINT_RATE_THRESHOLD
+                        if high_throughput:
+                            logging.info(
+                                f"Progress: {found_count}/{count} ({rate:.1f} keys/sec)"
+                            )
+                        else:
+                            logging.info(f"Progress: {found_count}/{count}")
+                        last_print_time = now
+                        keys_since_last_print = 0
+                    elif found_count == count:
+                        rate = keys_since_last_print / elapsed_since_print if elapsed_since_print > 0 else 0
+                        logging.info(
+                            f"Progress: {found_count}/{count} ({rate:.1f} keys/sec)"
+                        )
 
                 if (now - last_flush) >= FLUSH_INTERVAL or found_count >= count:
                     if pending_results:
@@ -188,6 +209,7 @@ def search_pubkey(
                             pending_results, output_dir,
                             prefix_patterns, suffix_patterns,
                             pattern_dirs, is_case_sensitive,
+                            quiet=high_throughput,
                         )
                         saved_total += saved
                         pending_results.clear()
@@ -233,6 +255,7 @@ def search_pubkey(
                     pending_results, output_dir,
                     prefix_patterns, suffix_patterns,
                     pattern_dirs, is_case_sensitive,
+                    quiet=high_throughput,
                 )
                 saved_total += saved
                 pending_results.clear()
