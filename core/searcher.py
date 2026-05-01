@@ -175,9 +175,9 @@ def save_result(
     is_case_sensitive: bool = True,
     quiet: bool = False,
 ) -> int:
-    from core.utils.crypto import get_public_key_from_private_bytes, save_keypair, _seen_pubkeys
+    from core.utils.crypto import get_public_key_from_private_bytes, save_keypair, _seen_paths
 
-    before_count = len(_seen_pubkeys)
+    before_count = len(_seen_paths)
     for output in outputs:
         if not output[0]:
             continue
@@ -190,4 +190,4 @@ def save_result(
                 pattern_dirs, is_case_sensitive,
             )
         save_keypair(pv_bytes, target_dir, quiet=quiet)
-    return len(_seen_pubkeys) - before_count
+    return len(_seen_paths) - before_count
