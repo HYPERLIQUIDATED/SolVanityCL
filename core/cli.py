@@ -219,6 +219,8 @@ def search_pubkey(
                 stop_flag.value = 1
 
             logging.info("Signaled workers to stop; draining remaining results...")
+            # Workers may enqueue extra matches before they observe stop_flag,
+            # so cap drained results to honor --count exactly.
             while True:
                 try:
                     res = result_queue.get(timeout=0.5)
@@ -226,7 +228,12 @@ def search_pubkey(
                     res = None
 
                 now = time.time()
-                if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
+                if (
+                    isinstance(res, (list, tuple, bytearray, bytes))
+                    and len(res) > 0
+                    and res[0]
+                    and saved_total + len(pending_results) < count
+                ):
                     pending_results.append(list(res))
 
                 if (now - last_flush) >= FLUSH_INTERVAL and pending_results:
@@ -246,7 +253,12 @@ def search_pubkey(
                             res = result_queue.get_nowait()
                         except _queue.Empty:
                             break
-                        if isinstance(res, (list, tuple, bytearray, bytes)) and len(res) > 0 and res[0]:
+                        if (
+                            isinstance(res, (list, tuple, bytearray, bytes))
+                            and len(res) > 0
+                            and res[0]
+                            and saved_total + len(pending_results) < count
+                        ):
                             pending_results.append(list(res))
                     break
 
