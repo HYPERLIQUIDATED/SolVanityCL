@@ -67,7 +67,7 @@ class Searcher:
         cl.enqueue_copy(self.command_queue, self.memobj_key32, self.setting.key32)
         global_work_size = self.setting.global_work_size // self.gpu_chunks
         local_size = self.setting.local_work_size
-        global_size = ((global_work_size + local_size - 1) // local_size) * local_size # align global size and local size
+        global_size = ((global_work_size + local_size - 1) // local_size) * local_size
         cl.enqueue_nd_range_kernel(
             self.command_queue,
             self.kernel,
@@ -76,14 +76,20 @@ class Searcher:
         )
         self.command_queue.flush()
         self.setting.increase_key32()
-        if self.prev_time is not None and self.is_nvidia:
-            time.sleep(self.prev_time * 0.98)
         cl.enqueue_copy(self.command_queue, self.output, self.memobj_output).wait()
         self.prev_time = time.time() - start_time
         if log_stats:
             logging.info(
                 f"GPU {self.display_index} Speed: {global_work_size / ((time.time() - start_time) * 1e6):.2f} MH/s"
             )
+
+        # If a match was found, clear the GPU output buffer so we don't report it again
+        if self.output[0]:
+            result = bytearray(self.output)
+            self.output[:] = bytearray(33)
+            cl.enqueue_copy(self.command_queue, self.memobj_output, self.output).wait()
+            return result
+
         return self.output
 
 
@@ -93,8 +99,13 @@ def multi_gpu_init(
     gpu_counts: int,
     stop_flag,
     lock,
+    result_queue,
     chosen_devices: Optional[Tuple[int, List[int]]] = None,
-) -> List:
+) -> None:
+    """
+    Long-running worker for a single GPU. Pushes matches into result_queue
+    and exits when stop_flag.value is set.
+    """
     try:
         searcher = Searcher(
             kernel_source=setting.kernel_source,
@@ -107,21 +118,23 @@ def multi_gpu_init(
         while True:
             result = searcher.find(i == 0)
             if result[0]:
-                with lock:
-                    if not stop_flag.value:
-                        stop_flag.value = 1
-                return list(result)
+                try:
+                    result_queue.put(list(result))
+                except Exception:
+                    logging.exception("Failed to put result into queue")
             if time.time() - st > max(gpu_counts, 1):
                 i = 0
                 st = time.time()
                 with lock:
                     if stop_flag.value:
-                        return list(result)
+                        break
             else:
                 i += 1
+            if stop_flag.value:
+                break
     except Exception as e:
         logging.exception(e)
-    return [0]
+    return
 
 
 def _resolve_output_dir(
@@ -160,14 +173,14 @@ def save_result(
     ends_with: Tuple[str, ...] = (),
     pattern_dirs: Optional[Dict[str, str]] = None,
     is_case_sensitive: bool = True,
+    quiet: bool = False,
 ) -> int:
-    from core.utils.crypto import get_public_key_from_private_bytes, save_keypair
+    from core.utils.crypto import get_public_key_from_private_bytes, save_keypair, _seen_paths
 
-    result_count = 0
+    before_count = len(_seen_paths)
     for output in outputs:
         if not output[0]:
             continue
-        result_count += 1
         pv_bytes = bytes(output[1:])
         target_dir = output_dir
         if pattern_dirs:
@@ -176,5 +189,5 @@ def save_result(
                 pubkey, output_dir, starts_with, ends_with,
                 pattern_dirs, is_case_sensitive,
             )
-        save_keypair(pv_bytes, target_dir)
-    return result_count
+        save_keypair(pv_bytes, target_dir, quiet=quiet)
+    return len(_seen_paths) - before_count
